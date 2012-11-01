@@ -1,0 +1,177 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# (c) 2012, Boyd Adamson <boyd () boydadamson.com>
+#
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+DOCUMENTATION = '''
+---
+module: smf
+short_description: Manage Solaris SMF services
+description:
+  - Manage SMF services on Solaris 10 and 11.
+version_added: 0.9
+author: Boyd Adamson
+options:
+  fmri:
+    aliases: [ name ]
+    description:
+      - The name (formally known as the FMRI) of the service to manage.
+      - Can be abbreviated as described in C(svcadm(1M))
+    required: true
+
+  state:
+    description:
+      - I(enabled), I(disabled), I(restarted), I(refreshed).
+        I(Enabled) and I(disabled) are idempotent actions. I(restarted)
+        will always bounce the service. I(refreshed) will always refresh.
+      - I(unchanged) is available to allow property setting only.
+    required: true
+    default: unchanged.
+    choices: [unchanged, enabled, disabled, restarted, refreshed]
+
+    others:
+      description:
+        - Any other name=value arguments will be interpreted as property
+          values to set on the named service. They should be of the form
+          C(propertygroup/property=value).
+        - Note that in SMF, changing a property value does not take effect until
+          the service is refreshed. Using C(state=refreshed) will cause
+          this to happen once the properties have been set. This would be an
+          unconditional refresh. To refresh only when a change has been made,
+          use a handler.
+        - Some services will also need to be restarted after the refresh.
+          This can be done by using C(state=restarted) in a handler.
+
+examples:
+  - code: smf fmri=svc:/network/http:apache2 state=enabled
+    description: Enable the apache2 service if it's not already
+  - code: smf fmri=webconsole state=disabled
+    description: Disable the webconsole service. Note that abbreviated FMRIs are ok if they are unique.
+  - code: smf fmri=system-log:default config/log_from_remote=true state=refreshed
+    description: Set a property on the syslog service.
+'''
+
+def assert_service_exists(module, fmri):
+    cmd = [module.get_bin_path('svcs', True)]
+    cmd.append(fmri)
+    res = subprocess.call(cmd)
+    if res == 0:
+        return True
+    else:
+        module.fail_json(msg="Could not confirm existence of service %s." % fmri)
+
+
+def svc_property_get(module, fmri, property):
+    cmd = [module.get_bin_path('svcprop', True)]
+    cmd.append('-p')
+    cmd.append(property)
+    cmd.append(fmri)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (out, err) = p.communicate()
+    rc = p.returncode
+    if rc != 0:
+        module.fail_json(fmri=fmri, msg=err, rc=rc)
+    return out.rstrip('\r\n')
+
+def svc_property_set(module, fmri, property, value):
+    cmd = [module.get_bin_path('svccfg', True)]
+    cmd += ['-s', fmri, 'setprop', property, '=', value]
+    p = subprocess.Popen(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (out, err) = p.communicate()
+    rc = p.returncode
+    return (rc, out, err)
+
+def service_state(module, fmri):
+    return svc_property_get(module, fmri, 'restarter/state')
+
+def svc_adm(module, fmri, command):
+    cmd = [module.get_bin_path('svcadm', True)]
+    cmd.append(command)
+    if command == 'enable' or command == 'disable':
+        cmd.append('-s')
+    cmd.append(fmri)
+    p = subprocess.Popen(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (out, err) = p.communicate()
+    rc = p.returncode
+    return (rc, out, err)
+
+def main():
+    module = AnsibleModule(
+        check_invalid_arguments=False,
+        argument_spec = dict(
+            fmri=dict(required=True, aliases=['name']),
+            state=dict(default='unchanged',
+                       choices=['unchanged', 'enabled', 'disabled', 'restarted', 'refreshed']),
+            )
+        )
+    state = module.params['state']
+    fmri = module.params['fmri']
+    rc = None
+    out = ''
+    err = ''
+    result = {}
+    result['fmri'] = fmri
+    result['state'] = state
+
+    assert_service_exists(module, fmri)
+
+    for (k,v) in module.params.iteritems():
+        if k not in [ 'state', 'fmri', 'name' ]:
+            try:
+                (propgroup,propname) = k.split('/')
+            except ValueError:
+                module.fail_json(fmri=fmri,
+                                 msg='Property name %s is not of form propertygroup/property' % k)
+            if svc_property_get(module, fmri, k) != v:
+                (rc, out, err) = svc_property_set(module, fmri, k, v)
+            result[k] = v;
+
+    if state == 'enabled':
+        if not service_state(module, fmri) == 'online':
+            (rc, out, err) = svc_adm(module, fmri, 'enable')
+            if not service_state(module, fmri) == 'online':
+                module.fail_json(fmri=fmri, msg=err, rc=rc)
+
+    elif state == 'disabled':
+        if not service_state(module, fmri) == 'disabled':
+            (rc, out, err) = svc_adm(module, fmri, 'disable')
+
+    elif state == 'restarted':
+        (rc, out, err) = svc_adm(module, fmri, 'restart')
+
+    elif state == 'refreshed':
+        (rc, out, err) = svc_adm(module, fmri, 'refresh')
+
+    if rc is None:
+        result['changed'] = False
+    else:
+        result['changed'] = True
+
+    result['state'] = service_state(module, fmri)
+
+    if out:
+        result['stdout'] = out
+    if err:
+        result['stderr'] = err
+
+    module.exit_json(**result)
+
+# include magic from lib/ansible/module_common.py
+#<<INCLUDE_ANSIBLE_MODULE_COMMON>>
+main()
