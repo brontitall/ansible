@@ -45,25 +45,25 @@ options:
     default: unchanged.
     choices: [unchanged, enabled, disabled, restarted, refreshed]
 
-    others:
-      description:
-        - Any other name=value arguments will be interpreted as property
-          values to set on the named service. They should be of the form
-          C(propertygroup/property=value).
-        - Note that in SMF, changing a property value does not take effect until
-          the service is refreshed. Using C(state=refreshed) will cause
-          this to happen once the properties have been set. This would be an
-          unconditional refresh. To refresh only when a change has been made,
-          use a handler.
-        - Some services will also need to be restarted after the refresh.
-          This can be done by using C(state=restarted) in a handler.
+  others:
+    description:
+      - Any other name=value arguments will be interpreted as property
+        values to set on the named service. They should be of the form
+        C(propertygroup/property=value).
+      - Note that in SMF, changing a property value does not take effect until
+        the service is refreshed. Using C(state=refreshed) will cause
+        this to happen once the properties have been set. This would be an
+        unconditional refresh. To refresh only when a change has been made,
+        use a handler.
+      - Some services will also need to be restarted after the refresh.
+        This can be done by using C(state=restarted) in a handler.
 
 examples:
-  - code: smf fmri=svc:/network/http:apache2 state=enabled
+  - code: 'smf fmri=svc:/network/http:apache2 state=enabled'
     description: Enable the apache2 service if it's not already
-  - code: smf fmri=webconsole state=disabled
+  - code: smf name=webconsole state=disabled
     description: Disable the webconsole service. Note that abbreviated FMRIs are ok if they are unique.
-  - code: smf fmri=system-log:default config/log_from_remote=true state=refreshed
+  - code: 'smf fmri=system-log:default config/log_from_remote=true state=refreshed'
     description: Set a property on the syslog service.
 '''
 
